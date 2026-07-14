@@ -112,8 +112,7 @@ app.use(cors({
         'http://localhost:3000',
         'http://127.0.0.1:5500',
         'http://127.0.0.1:10000',
-        'https://devicegridtest.org',
-        'https://www.devicegridtest.org',
+        'https://rcnf.netlify.app/',
         'https://nexa-faucet-kub8.onrender.com'
     ],
     credentials: true,
