@@ -1,5 +1,3 @@
-// backend/server.js
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -7,7 +5,6 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
-// ✅ Security middleware
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
@@ -24,7 +21,7 @@ try {
     };
 }
 
-// ✅ Local imports - PostgreSQL + Sequelize version
+// ✅ Local imports
 const { getBalance, sendFaucet, getFaucetAddress } = require('./wallet');
 const { 
     canRequest, 
@@ -38,97 +35,44 @@ const {
 } = require('./database');
 
 const app = express();
-
-// ✅ FIX: Trust proxy para correcta detección de IP detrás de Render/Cloudflare
 app.set('trust proxy', 1);
-
 const PORT = process.env.PORT || 10000;
 
 // ═══════════════════════════════════════════════════════════
-// 🔍 VERIFICACIÓN CRÍTICA: ¿sequelize está definido?
+// 🔍 VERIFICACIÓN CRÍTICA
 // ═══════════════════════════════════════════════════════════
-console.log('🔍 Debug database connection:', {
-    sequelize: sequelize !== undefined ? '✅ DEFINED' : '❌ UNDEFINED',
-    isConnected: sequelize?.authenticate ? '✅ Can authenticate' : '❌ No authenticate method',
-    usePostgreSQL: usePostgreSQL !== undefined ? usePostgreSQL : '❌ NOT EXPORTED'
-});
-
 if (!sequelize) {
     console.error('❌ FATAL: sequelize is undefined! Revisa database.js exports');
     process.exit(1);
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🔐 SECURITY MIDDLEWARE
+// 🔐 SECURITY & CORS MIDDLEWARE
 // ═══════════════════════════════════════════════════════════
-// ✅ Helmet para headers HTTP seguros
-app.use(helmet({
-    contentSecurityPolicy: false,  // Desactivado para permitir Tailwind CDN
-    crossOriginEmbedderPolicy: false
-}));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
-// ✅ Rate limiting para endpoints sensibles
-const faucetLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,  // 15 minutos
-    max: 5,  // Máximo 5 requests por IP por ventana
-    message: { success: false, error: 'Too many requests. Please try again later.' },
-    standardHeaders: true,
-    legacyHeaders: false
-});
-
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 20,
-    message: { success: false, error: 'Too many authentication attempts.' }
-});
-
-// ═══════════════════════════════════════════════════════════
-// 🔐 ADMIN AUTH MIDDLEWARE
-// ═══════════════════════════════════════════════════════════
-function requireAdminAuth(req, res, next) {
-    if (process.env.NODE_ENV !== 'production') {
-        console.warn('⚠️ DEBUG MODE: Auth bypassed for local development');
-        return next();
-    }
-    
-    const authHeader = req.headers.authorization;
-    const expectedAuth = `Bearer ${process.env.API_SECRET}`;
-    
-    if (!authHeader || authHeader !== expectedAuth) {
-        console.warn(`⚠️ Unauthorized admin access attempt from ${getClientIP(req)}`);
-        return res.status(401).json({ 
-            success: false, 
-            error: 'Unauthorized. Admin token required.' 
-        });
-    }
-    next();
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔒 CORS CONFIGURATION
-// ═══════════════════════════════════════════════════════════
 app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'http://127.0.0.1:5500',
-        'http://127.0.0.1:10000',
-        'https://rcnf.netlify.app/',
-        'https://nexa-faucet-kub8.onrender.com'
-    ],
+    origin: '*', // Permitir todas las origenes para pruebas (ajustar en producción si es necesario)
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    optionsSuccessStatus: 200
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ═══════════════════════════════════════════════════════════
+// ✅ SERVIR ARCHIVOS DEL FRONTEND (¡ESTO ARREGLA LOS ERRORES DE CSS/JS!)
+// ═══════════════════════════════════════════════════════════
+// Intenta servir desde la carpeta 'public' primero, si no, desde la raíz
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
+
+// ═══════════════════════════════════════════════════════════
 // 📊 LOGGING MIDDLEWARE
 // ═══════════════════════════════════════════════════════════
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${getClientIP(req)}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
 
@@ -143,26 +87,23 @@ function isValidNexaAddress(address) {
     return /^nexa:[a-z0-9]{48,90}$/.test(address);
 }
 
-// ✅ FIX: Obtener IP real considerando proxies
 function getClientIP(req) {
-    return req.headers['x-forwarded-for']?.split(',')[0]?.trim() 
-        || req.headers['x-real-ip'] 
-        || req.ip 
-        || req.connection?.remoteAddress 
-        || 'unknown';
+    return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🚰 FAUCET ROUTES (con rate limiting)
+// 🚰 FAUCET ROUTES
 // ═══════════════════════════════════════════════════════════
+const faucetLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { success: false, error: 'Too many requests. Please wait 15 minutes.' }
+});
+
 app.post('/faucet', faucetLimiter, async (req, res) => {
     const { address } = req.body;
-
     try {
-        if (!address || typeof address !== 'string') {
-            return res.status(400).json({ error: 'Address required' });
-        }
-        if (!isValidNexaAddress(address)) {
+        if (!address || !isValidNexaAddress(address)) {
             return res.status(400).json({ error: 'Invalid Nexa address' });
         }
 
@@ -175,29 +116,21 @@ app.post('/faucet', faucetLimiter, async (req, res) => {
         const amountSatoshis = parseInt(process.env.FAUCET_AMOUNT, 10) || 10000;
         const amountInNEXA = UnitUtils.formatNEXA(amountSatoshis);
         
-        console.log(`💰 Faucet amount: ${amountSatoshis} satoshis = ${amountInNEXA} NEXA`);
-
         if (balance < amountSatoshis) {
             return res.status(500).json({ error: 'Faucet has insufficient funds.' });
         }
 
-        let txid;
-        try {
-            txid = await sendFaucet(address, amountSatoshis);
-            await saveRequest(address);
-            console.log(`✅ Sent ${amountInNEXA} NEXA to ${address}. TXID: ${txid}`);
+        const txid = await sendFaucet(address, amountSatoshis);
+        await saveRequest(address);
+        console.log(`✅ Sent ${amountInNEXA} NEXA to ${address}. TXID: ${txid}`);
 
-            res.json({
-                success: true,
-                txid,
-                amount: amountSatoshis,
-                amountInNEXA,
-                message: `Sent ${amountInNEXA} NEXA to ${address}`
-            });
-        } catch (sendError) {
-            console.error('❌ Error sending transaction:', sendError.message);
-            res.status(500).json({ error: 'Failed to send transaction.' });
-        }
+        res.json({
+            success: true,
+            txid,
+            amount: amountSatoshis,
+            amountInNEXA,
+            message: `Sent ${amountInNEXA} NEXA to ${address}`
+        });
     } catch (error) {
         console.error('❌ Error in faucet:', error.message);
         res.status(500).json({ error: 'Internal server error' });
@@ -220,67 +153,38 @@ app.get('/balance', async (req, res) => {
     }
 });
 
-// ✅ FIX: /clear-cooldown ahora protegido con requireAdminAuth + authLimiter
-app.post('/clear-cooldown', requireAdminAuth, authLimiter, async (req, res) => {
+// ═══════════════════════════════════════════════════════════
+// ✅ RUTA /TRANSACTIONS (Para que el frontend no dé error 404)
+// ═══════════════════════════════════════════════════════════
+app.get('/transactions', async (req, res) => {
     try {
-        await Request.destroy({ truncate: true });
-        console.log('🧹 All cooldowns cleared by admin');
-        res.json({ success: true, message: 'Cooldowns cleared' });
-    } catch (err) {
-        console.error('❌ Error clearing cooldowns:', err.message);
-        res.status(500).json({ error: 'Error clearing cooldowns: ' + err.message });
+        // Por ahora devolvemos un array vacío. 
+        // Aquí puedes conectar tu lógica de historial de base de datos después.
+        res.json({ success: true, transactions: [] });
+    } catch (error) {
+        console.error('Error getting transactions:', error);
+        res.status(500).json({ error: 'Could not retrieve transactions' });
     }
 });
 
 // ═══════════════════════════════════════════════════════════
-// 🔍 HEALTH CHECK & DB INFO
+// 🔍 HEALTH CHECK
 // ═══════════════════════════════════════════════════════════
 app.get('/api/health', async (req, res) => {
     try {
         await sequelize.authenticate();
         const dbInfo = await getDbInfo();
-        
         res.json({
             status: 'ok',
             timestamp: new Date().toISOString(),
-            uptime: process.uptime(),
-            environment: process.env.NODE_ENV || 'development',
             database: {
                 type: usePostgreSQL ? 'PostgreSQL' : 'SQLite',
                 connected: true,
-                host: sequelize.config.host,
-                database: sequelize.config.database,
                 ...dbInfo
-            },
-            render_info: process.env.RENDER ? 
-                '✅ Running on Render with persistent PostgreSQL' : null
-        });
-    } catch (error) {
-        res.status(500).json({
-            status: 'error',
-            timestamp: new Date().toISOString(),
-            database: { connected: false, error: error.message }
-        });
-    }
-});
-
-app.get('/api/admin/db/info', requireAdminAuth, authLimiter, async (req, res) => {
-    try {
-        const dbInfo = await getDbInfo();
-        
-        res.json({
-            success: true,
-            database: dbInfo,
-            filesystem: {
-                is_ephemeral: !usePostgreSQL,
-                note: usePostgreSQL 
-                    ? '✅ Using persistent PostgreSQL - data survives restarts' 
-                    : '⚠️ Using local SQLite - data stored in faucet_dev.db'
             }
         });
     } catch (error) {
-        console.error('DB info error:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ status: 'error', database: { connected: false, error: error.message } });
     }
 });
 
@@ -297,18 +201,6 @@ app.all('*', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Faucet Backend running on port ${PORT}`);
-    console.log(`🗄️  Database: ${usePostgreSQL ? 'PostgreSQL' : 'SQLite'} @ ${sequelize.config?.host || 'localhost'}:${sequelize.config?.port || 'N/A'}/${sequelize.config?.database || 'faucet_dev.db'}`);
-    console.log(`💰 Faucet amount: ${UnitUtils.formatNEXA(parseInt(process.env.FAUCET_AMOUNT, 10) || 10000)} NEXA`);
-    
-    // Debug: Listar rutas registradas
-    console.log('🗺️ Registered routes preview:');
-    app._router?.stack?.forEach((r) => {
-        if (r.route?.path) {
-            const method = Object.keys(r.route.methods)[0]?.toUpperCase();
-            console.log(`  ${method} ${r.route.path}`);
-        }
-    });
-    
     try {
         await initializeTables();
         console.log('✅ System initialized successfully');
@@ -316,22 +208,9 @@ app.listen(PORT, '0.0.0.0', async () => {
         console.error('❌ Error initializing system:', error.message);
         process.exit(1);
     }
-    console.log(`🔍 Health check: GET /api/health`);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
-    console.log('🔄 Shutting down...');
-    try { 
-        await closeDatabase(); 
-        console.log('✅ Database connection closed'); 
-    } catch (err) { 
-        console.error('❌ Error closing DB:', err.message); 
-    }
+    await closeDatabase();
     process.exit(0);
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
