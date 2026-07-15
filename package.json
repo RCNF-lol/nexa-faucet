@@ -16,7 +16,7 @@
   "author": "DeviceGrid.io Team",
   "license": "MIT",
   "engines": {
-    "node": "20.x"
+    "node": "20.18.0"
   },
   "dependencies": {
     "bech32": "^2.0.0",
