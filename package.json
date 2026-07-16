@@ -24,7 +24,7 @@
     "express-rate-limit": "^8.3.2",
     "helmet": "^8.1.0",
     "libnexa-ts": "^3.0.3",
-    "nexa-wallet-sdk": "^1.0.0",
+    "nexa-wallet-sdk": "^0.3.5",
     "pg": "^8.20.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
